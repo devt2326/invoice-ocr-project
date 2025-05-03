@@ -1,0 +1,19 @@
+{
+  "invoice_number": "100",
+  "invoice_date": "Enter invoice date",
+  "vendor_name": "ABCD",
+  "line_items": [
+    {
+      "description": "Apple",
+      "amount": "$100.00"
+    },
+    {
+      "description": "Orrange",
+      "amount": "$50.00"
+    }
+  ],
+  "subtotal": "$150.00",
+  "taxes": "Tax rate",
+  "total_amount": "$150.00",
+  "contact_info": "Contact Name, Phone Number, Email"
+}
