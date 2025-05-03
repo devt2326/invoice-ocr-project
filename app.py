@@ -94,7 +94,7 @@ Invoice:
                         amt = item.get("amount", "$0").replace("$", "").replace(",", "")
                         item["amount"] = float(amt)
                         item["quantity"] = int(item.get("quantity", 1))
-                        item["unit_cost"] = round(item["amount"] / item["quantity"], 2)
+                        item["unit_cost"] = round(item["amount"] / item["quantity"], 2) if item["quantity"] != 0 else 0
 
                     st.session_state["extracted_data"] = data
                     st.success("Fields extracted.")
@@ -128,7 +128,7 @@ with tabs[2]:
             category = VENDOR_CATEGORY_MAP.get(vendor)
 
             if not category:
-                prompt = f"Suggest an accounting category like 'Office Supplies', 'IT Services', 'Inventory' for this invoice:\n{text}\nReturn just the category name."
+                prompt = f"Suggest an accounting category like 'Office Supplies', 'IT Services', 'Inventory Purchases' for this invoice:\n{text}\nReturn just the category name."
                 try:
                     response = openai.ChatCompletion.create(
                         model="gpt-4",
@@ -145,6 +145,7 @@ with tabs[2]:
                 {"debit": category, "credit": "Accounts Payable", "amount": amount}
             ]
             st.session_state["journal_entries"] = journal_entries
+            st.session_state["category"] = category
             st.success("Suggested journal entries loaded.")
 
     # Editable Table
@@ -184,7 +185,7 @@ with tabs[2]:
             st.success("Ledger updated.")
 
             # --- Inventory Sync ---
-            if category == "Inventory Purchases":
+            if st.session_state.get("category") == "Inventory Purchases":
                 inv_df = pd.read_excel(INVENTORY_FILE) if os.path.exists(INVENTORY_FILE) else pd.DataFrame(columns=["description", "quantity", "amount", "invoice_number", "invoice_date"])
                 for item in data.get("line_items", []):
                     row = {
@@ -192,18 +193,10 @@ with tabs[2]:
                         "quantity": item.get("quantity"),
                         "amount": item.get("amount"),
                         "invoice_number": ref,
-                        "invoice_date": date,
-                        "unit_cost": item.get("unit_cost")
+                        "invoice_date": date
                     }
                     inv_df = pd.concat([inv_df, pd.DataFrame([row])], ignore_index=True)
-                inv_df_grouped = inv_df.groupby("description", as_index=False).agg({
-                    "quantity": "sum",
-                    "amount": "sum",
-                    "unit_cost": "mean",
-                    "invoice_number": "last",
-                    "invoice_date": "last"
-                })
-                inv_df_grouped.to_excel(INVENTORY_FILE, index=False)
+                inv_df.to_excel(INVENTORY_FILE, index=False)
 
 # Ledger History
 with tabs[3]:
@@ -219,6 +212,17 @@ with tabs[4]:
     st.header("Inventory")
     if os.path.exists(INVENTORY_FILE):
         inv_df = pd.read_excel(INVENTORY_FILE)
-        st.dataframe(inv_df, use_container_width=True)
+        inv_df["amount"] = inv_df["amount"].astype(str).str.replace("$", "").str.replace(",", "").astype(float)
+        inv_df["quantity"] = pd.to_numeric(inv_df["quantity"], errors="coerce").fillna(0)
+        inv_df["unit_cost"] = inv_df.apply(lambda row: row["amount"] / row["quantity"] if row["quantity"] != 0 else 0, axis=1)
+
+        grouped = inv_df.groupby("description", as_index=False).agg({
+            "quantity": "sum",
+            "amount": "sum",
+            "unit_cost": "mean",
+            "invoice_number": "last",
+            "invoice_date": "last"
+        })
+        st.dataframe(grouped, use_container_width=True)
     else:
         st.info("No inventory records yet. Upload an invoice with Inventory Purchases to get started.")
