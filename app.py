@@ -1,157 +1,211 @@
+import openai
 import os
 import json
+import pdfplumber
 import pandas as pd
 import streamlit as st
-import pdfplumber
-import openai
 from dotenv import load_dotenv
-from datetime import datetime
 
-# Load OpenAI key
+# --- Setup ---
 load_dotenv()
 openai.api_key = os.getenv("OPENAI_API_KEY")
 
-st.set_page_config(page_title="Invoice OCR Parser", layout="centered")
-st.title("Invoice OCR Parser")
+# --- Constants ---
+OUTPUT_DIR = "data"
+LEDGER_FILE = os.path.join(OUTPUT_DIR, "ledger.xlsx")
+VENDOR_CATEGORY_MAP = {
+    "ABCD": "Office Supplies",
+    "Google": "IT Services",
+    "Staples": "Office Supplies"
+}
+os.makedirs(OUTPUT_DIR, exist_ok=True)
 
-uploaded_file = st.file_uploader("Upload Invoice PDF", type=["pdf"])
-if "invoice_data" not in st.session_state:
-    st.session_state.invoice_data = None
+# --- Session State ---
+if "extracted_data" not in st.session_state:
+    st.session_state["extracted_data"] = {}
 if "journal_entries" not in st.session_state:
-    st.session_state.journal_entries = None
+    st.session_state["journal_entries"] = []
 
-# Extract invoice text
-text = ""
-if uploaded_file:
-    try:
-        with pdfplumber.open(uploaded_file) as pdf:
-            for page in pdf.pages:
-                page_text = page.extract_text()
-                if page_text:
-                    text += page_text + "\n"
-        if text.strip():
-            st.subheader("Extracted Invoice Text")
-            st.text(text)
-        else:
-            st.warning("No extractable text found in the PDF.")
-    except Exception as e:
-        st.error(f"Error reading PDF: {e}")
+# --- App Title ---
+st.set_page_config(page_title="LedgerScribe", layout="wide")
+st.title("LedgerScribe: Invoice Parser & Journal Generator")
 
-# Extract invoice fields
-if text.strip():
-    if st.button("Extract Detailed Fields"):
-        with st.spinner("Analyzing invoice with GPT..."):
-            prompt = f"""
-You are an invoice parser. Extract the following fields from this invoice text:
+# --- Tabs Layout ---
+tabs = st.tabs(["Upload Invoice", "Invoice Details", "Journal Entries", "Ledger History"])
+
+# ========================
+# Tab 1: Upload Invoice
+# ========================
+with tabs[0]:
+    uploaded_file = st.file_uploader("Upload Invoice PDF", type=["pdf"])
+
+    if uploaded_file:
+        text = ""
+        try:
+            with pdfplumber.open(uploaded_file) as pdf:
+                for page in pdf.pages:
+                    page_text = page.extract_text()
+                    if page_text:
+                        text += page_text + "\n"
+            st.success("Invoice text extracted.")
+            st.text_area("Extracted Invoice Text", text, height=300)
+
+            if st.button("Extract Invoice Fields"):
+                with st.spinner("Analyzing with GPT..."):
+                    prompt = f"""
+You are an AI assistant. Extract the following fields from this invoice text:
 
 - invoice_number
 - invoice_date
 - vendor_name
-- line_items (each with description and amount)
+- line_items (list of description and amount)
 - subtotal
 - taxes
 - total_amount
 - contact_info
 
-Return a valid JSON object with these fields only.
-
-Invoice text:
-{text}
-"""
-            try:
-                response = openai.ChatCompletion.create(
-                    model="gpt-4",
-                    messages=[{"role": "user", "content": prompt}],
-                    temperature=0
-                )
-                result = response.choices[0].message["content"].strip()
-                data = json.loads(result)
-                st.session_state.invoice_data = data
-                st.subheader("Extracted Detailed Invoice Fields")
-                st.json(data)
-            except Exception as e:
-                st.error(f"Error calling GPT: {e}")
-
-# Suggest journal entries at invoice level
-if st.session_state.invoice_data:
-    if st.button("Suggest Journal Entries"):
-        with st.spinner("Generating journal entries..."):
-            invoice_data = st.session_state.invoice_data
-            prompt = f"""
-You are a finance assistant. Based on the following invoice data, generate a single journal entry at the invoice level.
-
-Only return one consolidated entry. Choose the debit account based on the context.
-
-Return JSON in this format:
-[
-  {{
-    "debit": "Expense Category",
-    "credit": "Accounts Payable",
-    "amount": 150.00
-  }}
-]
+Only return a valid JSON object with those fields.
 
 Invoice:
-{json.dumps(invoice_data, indent=2)}
+{text}
 """
-            try:
-                response = openai.ChatCompletion.create(
-                    model="gpt-4",
-                    messages=[{"role": "user", "content": prompt}],
-                    temperature=0
-                )
-                raw_output = response.choices[0].message["content"]
-                st.subheader("Raw GPT Output")
-                st.code(raw_output, language="json")
+                    try:
+                        response = openai.ChatCompletion.create(
+                            model="gpt-4",
+                            messages=[{"role": "user", "content": prompt}],
+                            temperature=0
+                        )
+                        result = response.choices[0].message["content"]
+                        data = json.loads(result)
+                        st.session_state["extracted_data"] = data
 
-                try:
-                    journal_data = json.loads(raw_output)
-                    st.session_state.journal_entries = journal_data
-                    st.subheader("Suggested Journal Entries")
-                    st.json(journal_data)
-                except json.JSONDecodeError as e:
-                    st.error(f"Invalid JSON returned from GPT: {e}")
-            except Exception as e:
-                st.error(f"Error during GPT call: {e}")
+                        filename = f"{data.get('vendor_name','unknown')}_{data.get('invoice_number','unknown')}.json"
+                        with open(os.path.join(OUTPUT_DIR, filename), "w") as f:
+                            json.dump(data, f, indent=2)
 
-# Save journal entries to ledger
-if st.session_state.journal_entries and st.session_state.invoice_data:
-    if st.button("Confirm and Save to Ledger"):
-        invoice = st.session_state.invoice_data
-        entries = st.session_state.journal_entries
-        invoice_date = invoice.get("invoice_date", str(datetime.today().date()))
-        reference = invoice.get("invoice_number", "UNKNOWN")
+                        st.success("Fields extracted and saved.")
+                    except Exception as e:
+                        st.error(f"Error from GPT: {e}")
+        except Exception as e:
+            st.error(f"PDF Read Error: {e}")
 
-        ledger_rows = []
-        for entry in entries:
-            ledger_rows.append({
-                "sr_no": None,
-                "date": invoice_date,
-                "reference": reference,
-                "description": entry["debit"],
-                "debit": entry["amount"],
-                "credit": ""
-            })
-            ledger_rows.append({
-                "sr_no": None,
-                "date": invoice_date,
-                "reference": reference,
-                "description": entry["credit"],
-                "debit": "",
-                "credit": entry["amount"]
-            })
+# ========================
+# Tab 2: Invoice Details
+# ========================
+with tabs[1]:
+    data = st.session_state.get("extracted_data", {})
+    if data:
+        st.subheader("Extracted Invoice Fields")
+        st.json(data)
+    else:
+        st.info("Please upload and extract an invoice first.")
 
-        os.makedirs("outputs", exist_ok=True)
-        ledger_path = "outputs/ledger.xlsx"
+# ============================
+# Tab 3: Journal Entries
+# ============================
+with tabs[2]:
+    st.header("Suggested Journal Entries")
 
-        if os.path.exists(ledger_path):
-            df = pd.read_excel(ledger_path)
+    extracted_data = st.session_state.get("extracted_data", {})
+    text = st.session_state.get("invoice_text", "")
+
+    if st.button("Suggest Journal Entries"):
+        if not extracted_data:
+            st.warning("Please extract invoice data first.")
         else:
-            df = pd.DataFrame(columns=["sr_no", "date", "reference", "description", "debit", "credit"])
+            amount = extracted_data.get("total_amount", "0").replace("$", "").strip()
+            try:
+                amount = float(amount)
+            except:
+                amount = 0.0
 
-        df = pd.concat([df, pd.DataFrame(ledger_rows)], ignore_index=True)
-        df["sr_no"] = range(1, len(df) + 1)
-        df.to_excel(ledger_path, index=False)
+            vendor = extracted_data.get("vendor_name", "").strip()
+            category = VENDOR_CATEGORY_MAP.get(vendor)
 
-        st.success("Journal entries saved to ledger successfully.")
-        st.write(df.tail(10))
+            if not category:
+                prompt = f"Suggest an accounting category like 'Office Supplies', 'IT Services', 'Inventory' for this invoice:\n{text}\nReturn just the category name."
+                try:
+                    response = openai.ChatCompletion.create(
+                        model="gpt-4",
+                        messages=[{"role": "user", "content": prompt}],
+                        temperature=0
+                    )
+                    category = response.choices[0].message["content"].strip()
+                    st.info(f"GPT Suggested Category: {category}")
+                except Exception as e:
+                    category = "Uncategorized"
+                    st.warning("GPT failed. Defaulted to 'Uncategorized'.")
+
+            journal_entries = [
+                {"debit": category, "credit": "Accounts Payable", "amount": amount}
+            ]
+            st.session_state["journal_entries"] = journal_entries
+            st.success("Suggested journal entries loaded.")
+
+    # Editable Table
+    edited_entries = st.data_editor(
+        st.session_state.get("journal_entries", [{"debit": "", "credit": "", "amount": 0.0}]),
+        num_rows="dynamic",
+        use_container_width=True,
+        key="editable_journal_entries"
+    )
+
+    if st.button("Confirm and Save to Ledger"):
+        if not edited_entries:
+            st.warning("No journal entries to save.")
+        else:
+            data = extracted_data
+            date = data.get("invoice_date", "Enter invoice date")
+            ref = data.get("invoice_number", "unknown")
+
+# Get next sr_no from existing ledger
+        if os.path.exists(LEDGER_FILE):
+            existing = pd.read_excel(LEDGER_FILE)
+            last_sr = existing["sr_no"].max() + 1
+        else:
+            existing = pd.DataFrame()
+            last_sr = 1
+
+            rows = []
+            sr = 1
+            for entry in edited_entries:
+                rows.append({
+                    "sr_no": sr,
+                    "date": date,
+                    "reference": ref,
+                    "description": entry["debit"],
+                    "debit": entry["amount"],
+                    "credit": None
+                })
+                sr += 1
+                rows.append({
+                    "sr_no": sr,
+                    "date": date,
+                    "reference": ref,
+                    "description": entry["credit"],
+                    "debit": None,
+                    "credit": entry["amount"]
+                })
+                sr += 1
+
+            new_df = pd.DataFrame(rows)
+
+            if os.path.exists(LEDGER_FILE):
+                existing = pd.read_excel(LEDGER_FILE)
+                combined = pd.concat([existing, new_df], ignore_index=True)
+            else:
+                combined = new_df
+
+            combined.to_excel(LEDGER_FILE, index=False)
+            st.success("Ledger updated.")
+
+# ============================
+# Tab 4: Ledger History
+# ============================
+with tabs[3]:
+    st.subheader("Ledger Entries")
+    if os.path.exists(LEDGER_FILE):
+        df = pd.read_excel(LEDGER_FILE)
+        st.dataframe(df)
+    else:
+        st.info("No ledger records found yet.")
