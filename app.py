@@ -56,56 +56,6 @@ with tabs[0]:
 
 # Invoice Details
 with tabs[1]:
-#     text = st.session_state.get("invoice_text", "")
-#     if text:
-#         st.subheader("Extracted Invoice Text")
-#         st.text_area("Text", text, height=300)
-
-#         if st.button("Extract Invoice Fields"):
-#             with st.spinner("Calling GPT to extract invoice fields..."):
-#                 prompt = f"""
-# Extract the following fields from this invoice text:
-
-# - invoice_number
-# - invoice_date
-# - vendor_name
-# - line_items (list of description, quantity, and amount)
-# - subtotal
-# - taxes
-# - total_amount
-# - contact_info (address, phone_number)
-
-# Only return a valid JSON object with those fields.
-
-# Invoice:
-# {text}
-# """
-#                 try:
-#                     response = openai.ChatCompletion.create(
-#                         model="gpt-4",
-#                         messages=[{"role": "user", "content": prompt}],
-#                         temperature=0
-#                     )
-#                     result = response.choices[0].message["content"]
-#                     data = json.loads(result)
-
-#                     # Normalize line items
-#                     for item in data.get("line_items", []):
-#                         amt = item.get("amount", "$0").replace("$", "").replace(",", "")
-#                         item["amount"] = float(amt)
-#                         item["quantity"] = int(item.get("quantity", 1))
-#                         item["unit_cost"] = round(item["amount"] / item["quantity"], 2) if item["quantity"] != 0 else 0
-
-#                     st.session_state["extracted_data"] = data
-#                     st.success("Fields extracted.")
-
-#                 except Exception as e:
-#                     st.error(f"GPT parsing error: {e}")
-
-#     extracted = st.session_state.get("extracted_data", {})
-#     if extracted:
-#         st.subheader("Extracted Invoice Fields")
-#         st.json(extracted)
     text = st.session_state.get("invoice_text", "")
     if text:
         st.subheader("Extracted Invoice Text")
@@ -227,7 +177,6 @@ Invoice:
                 st.success("Invoice details processed.")
     else:
         st.info("Please upload and extract an invoice first.")
-
 # Journal Entries
 with tabs[2]:
     st.header("Suggested Journal Entries")
@@ -241,6 +190,7 @@ with tabs[2]:
         else:
             amount_val = extracted_data.get("total_amount", 0)
             amount_str = str(amount_val).replace("$", "").replace(",", "").strip()
+            
             try:
                 amount = float(amount_str)
             except:
