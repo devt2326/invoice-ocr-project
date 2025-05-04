@@ -5,7 +5,7 @@ import pdfplumber
 import pandas as pd
 import streamlit as st
 from dotenv import load_dotenv
-
+from datetime import datetime
 # Load environment variables
 load_dotenv()
 openai.api_key = os.getenv("OPENAI_API_KEY")
@@ -89,7 +89,6 @@ Invoice:
                     result = response.choices[0].message["content"]
                     data = json.loads(result)
 
-                    # Normalize line items
                     for item in data.get("line_items", []):
                         amt = item.get("amount", "$0").replace("$", "").replace(",", "")
                         item["amount"] = float(amt)
@@ -102,11 +101,82 @@ Invoice:
                 except Exception as e:
                     st.error(f"GPT parsing error: {e}")
 
-    extracted = st.session_state.get("extracted_data", {})
-    if extracted:
-        st.subheader("Extracted Invoice Fields")
-        st.json(extracted)
+    data = st.session_state.get("extracted_data", {})
 
+    if data:
+        
+        st.subheader("Invoice Details")
+
+        # --- Line Items UI ---
+        st.markdown("### Line Items")
+
+        with st.form("add_item_form", clear_on_submit=True):
+            col1, col2, col3, col4 = st.columns([4, 2, 2, 1])
+            with col1:
+                item_desc = st.text_input("Description", placeholder="Item description")
+            with col2:
+                item_qty = st.number_input("Quantity", min_value=1, step=1)
+            with col3:
+                item_amount = st.number_input("Amount", min_value=0.0, step=0.01)
+            with col4:
+                st.markdown(" ")
+            add_item = st.form_submit_button("Add Item")
+
+        if add_item:
+            if item_desc and item_amount > 0:
+                data.setdefault("line_items", []).append({
+                    "description": item_desc,
+                    "quantity": item_qty,
+                    "amount": item_amount,
+                    "unit_cost": round(item_amount / item_qty, 2) if item_qty > 0 else 0
+                })
+                st.session_state["extracted_data"] = data
+                st.rerun()
+
+        if data.get("line_items"):
+            st.markdown("#### Current Items")
+            for idx, item in enumerate(data["line_items"]):
+                col1, col2, col3, col4, col5 = st.columns([4, 2, 2, 2, 1])
+                col1.write(item["description"])
+                col2.write(f"Qty: {item['quantity']}")
+                col3.write(f"Amount: ${item['amount']:.2f}")
+                col4.write(f"Unit: ${item['unit_cost']:.2f}")
+                if col5.button("❌", key=f"delete_{idx}"):
+                    data["line_items"].pop(idx)
+                    st.session_state["extracted_data"] = data
+                    st.rerun()
+
+        total_amount = sum(item["amount"] for item in data.get("line_items", []))
+
+        with st.form("invoice_form"):
+            col1, col2 = st.columns(2)
+            with col1:
+                invoice_number = st.text_input("Invoice Number", value=data.get("invoice_number", ""))
+            with col2:
+                raw_date = data.get("invoice_date", "")
+                parsed_date = pd.to_datetime(raw_date, errors="coerce")
+                if pd.isna(parsed_date):
+                    parsed_date = datetime.today()
+                invoice_date = st.date_input("Date", value=parsed_date.date())
+
+            col3, col4 = st.columns(2)
+            with col3:
+                vendor_name = st.text_input("Vendor", value=data.get("vendor_name", ""))
+            with col4:
+                st.number_input("Total Amount", value=total_amount, disabled=True)
+
+            description = st.text_area("Description", value="Invoice description")
+
+            submitted = st.form_submit_button("Process Invoice")
+            if submitted:
+                data["invoice_number"] = invoice_number
+                data["invoice_date"] = invoice_date.strftime("%Y-%m-%d")
+                data["vendor_name"] = vendor_name
+                data["total_amount"] = total_amount
+                st.session_state["extracted_data"] = data
+                st.success("Invoice details processed.")
+    else:
+        st.info("Please upload and extract an invoice first.")
 # Journal Entries
 with tabs[2]:
     st.header("Suggested Journal Entries")
@@ -118,7 +188,9 @@ with tabs[2]:
         if not extracted_data:
             st.warning("Please extract invoice data first.")
         else:
-            amount_str = extracted_data.get("total_amount", "0").replace("$", "").replace(",", "").strip()
+            amount_val = extracted_data.get("total_amount", 0)
+            amount_str = str(amount_val).replace("$", "").replace(",", "").strip()
+            
             try:
                 amount = float(amount_str)
             except:
