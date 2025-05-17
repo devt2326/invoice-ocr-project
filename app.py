@@ -5,6 +5,7 @@ import pdfplumber
 import pandas as pd
 import streamlit as st
 from dotenv import load_dotenv
+from datetime import datetime
 
 # Load environment variables
 load_dotenv()
@@ -36,10 +37,12 @@ if "journal_entries" not in st.session_state:
     st.session_state["journal_entries"] = []
 
 # Tabs
-tabs = st.tabs(["Upload Invoice", "Invoice Details", "Journal Entries", "Ledger History", "Inventory"])
+tabs = st.tabs(["Upload Invoice", "Journal Entries", "Ledger History", "Inventory", "Dashboard"])
 
-# Upload Invoice
+# Upload Invoice (Upload + Details)
 with tabs[0]:
+    st.header("Invoice Upload and Details")
+
     uploaded_file = st.file_uploader("Upload your Invoice PDF", type=["pdf"])
     if uploaded_file:
         text = ""
@@ -50,18 +53,8 @@ with tabs[0]:
                     if page_text:
                         text += page_text + "\n"
             st.session_state["invoice_text"] = text
-            st.success("Invoice text extracted.")
-        except Exception as e:
-            st.error(f"PDF Read Error: {e}")
 
-# Invoice Details
-with tabs[1]:
-    text = st.session_state.get("invoice_text", "")
-    if text:
-        st.subheader("Extracted Invoice Text")
-        st.text_area("Text", text, height=300)
-
-        if st.button("Extract Invoice Fields"):
+            # Auto extract invoice fields on upload
             with st.spinner("Calling GPT to extract invoice fields..."):
                 prompt = f"""
 Extract the following fields from this invoice text:
@@ -89,7 +82,6 @@ Invoice:
                     result = response.choices[0].message["content"]
                     data = json.loads(result)
 
-                    # Normalize line items
                     for item in data.get("line_items", []):
                         amt = item.get("amount", "$0").replace("$", "").replace(",", "")
                         item["amount"] = float(amt)
@@ -102,13 +94,85 @@ Invoice:
                 except Exception as e:
                     st.error(f"GPT parsing error: {e}")
 
-    extracted = st.session_state.get("extracted_data", {})
-    if extracted:
-        st.subheader("Extracted Invoice Fields")
-        st.json(extracted)
+        except Exception as e:
+            st.error(f"PDF Read Error: {e}")
+
+    data = st.session_state.get("extracted_data", {})
+
+    if data:
+        st.subheader("Invoice Details")
+
+        st.markdown("### Line Items")
+        with st.form("add_item_form", clear_on_submit=True):
+            col1, col2, col3, col4 = st.columns([4, 2, 2, 1])
+            with col1:
+                item_desc = st.text_input("Description", placeholder="Item description")
+            with col2:
+                item_qty = st.number_input("Quantity", min_value=1, step=1)
+            with col3:
+                item_amount = st.number_input("Amount", min_value=0.0, step=0.01)
+            with col4:
+                st.markdown(" ")
+            add_item = st.form_submit_button("Add Item")
+
+        if add_item:
+            if item_desc and item_amount > 0:
+                data.setdefault("line_items", []).append({
+                    "description": item_desc,
+                    "quantity": item_qty,
+                    "amount": item_amount,
+                    "unit_cost": round(item_amount / item_qty, 2) if item_qty > 0 else 0
+                })
+                st.session_state["extracted_data"] = data
+                st.rerun()
+
+        if data.get("line_items"):
+            st.markdown("#### Current Items")
+            for idx, item in enumerate(data["line_items"]):
+                col1, col2, col3, col4, col5 = st.columns([4, 2, 2, 2, 1])
+                col1.write(item["description"])
+                col2.write(f"Qty: {item['quantity']}")
+                col3.write(f"Amount: ${item['amount']:.2f}")
+                col4.write(f"Unit: ${item['unit_cost']:.2f}")
+                if col5.button("❌", key=f"delete_{idx}"):
+                    data["line_items"].pop(idx)
+                    st.session_state["extracted_data"] = data
+                    st.rerun()
+
+        total_amount = sum(item["amount"] for item in data.get("line_items", []))
+
+        with st.form("invoice_form"):
+            col1, col2 = st.columns(2)
+            with col1:
+                invoice_number = st.text_input("Invoice Number", value=data.get("invoice_number", ""))
+            with col2:
+                raw_date = data.get("invoice_date", "")
+                parsed_date = pd.to_datetime(raw_date, errors="coerce")
+                if pd.isna(parsed_date):
+                    parsed_date = datetime.today()
+                invoice_date = st.date_input("Date", value=parsed_date.date())
+
+            col3, col4 = st.columns(2)
+            with col3:
+                vendor_name = st.text_input("Vendor", value=data.get("vendor_name", ""))
+            with col4:
+                st.number_input("Total Amount", value=total_amount, disabled=True)
+
+            description = st.text_area("Description", value="Invoice description")
+
+            submitted = st.form_submit_button("Process Invoice")
+            if submitted:
+                data["invoice_number"] = invoice_number
+                data["invoice_date"] = invoice_date.strftime("%Y-%m-%d")
+                data["vendor_name"] = vendor_name
+                data["total_amount"] = total_amount
+                st.session_state["extracted_data"] = data
+                st.success("Invoice details processed.")
+    else:
+        st.info("Please upload a valid invoice PDF.")
 
 # Journal Entries
-with tabs[2]:
+with tabs[1]:
     st.header("Suggested Journal Entries")
 
     extracted_data = st.session_state.get("extracted_data", {})
@@ -118,7 +182,9 @@ with tabs[2]:
         if not extracted_data:
             st.warning("Please extract invoice data first.")
         else:
-            amount_str = extracted_data.get("total_amount", "0").replace("$", "").replace(",", "").strip()
+            amount_val = extracted_data.get("total_amount", 0)
+            amount_str = str(amount_val).replace("$", "").replace(",", "").strip()
+            
             try:
                 amount = float(amount_str)
             except:
@@ -199,7 +265,7 @@ with tabs[2]:
                 inv_df.to_excel(INVENTORY_FILE, index=False)
 
 # Ledger History
-with tabs[3]:
+with tabs[2]:
     st.subheader("Ledger Entries")
     if os.path.exists(LEDGER_FILE):
         df = pd.read_excel(LEDGER_FILE)
@@ -208,7 +274,7 @@ with tabs[3]:
         st.info("No ledger entries found yet.")
 
 # Inventory View
-with tabs[4]:
+with tabs[3]:
     st.header("Inventory")
     if os.path.exists(INVENTORY_FILE):
         inv_df = pd.read_excel(INVENTORY_FILE)
@@ -226,3 +292,39 @@ with tabs[4]:
         st.dataframe(grouped, use_container_width=True)
     else:
         st.info("No inventory records yet. Upload an invoice with Inventory Purchases to get started.")
+
+# Dashboard Tab
+with tabs[4]:
+    st.header("Dashboard Overview")
+
+    col1, col2 = st.columns(2)
+
+    if os.path.exists(LEDGER_FILE):
+        ledger_df = pd.read_excel(LEDGER_FILE)
+        total_debit = ledger_df["debit"].fillna(0).sum()
+        total_credit = ledger_df["credit"].fillna(0).sum()
+
+        with col1:
+            st.metric("Total Debits", f"${total_debit:,.2f}")
+        with col2:
+            st.metric("Total Credits", f"${total_credit:,.2f}")
+
+        st.subheader("Recent Journal Entries")
+        st.dataframe(ledger_df.tail(10), use_container_width=True)
+    else:
+        st.info("No ledger data available.")
+
+    if os.path.exists(INVENTORY_FILE):
+        inv_df = pd.read_excel(INVENTORY_FILE)
+        inv_df["amount"] = inv_df["amount"].astype(str).str.replace("$", "").str.replace(",", "").astype(float)
+        inv_df["quantity"] = pd.to_numeric(inv_df["quantity"], errors="coerce").fillna(0)
+        inv_df["unit_cost"] = inv_df.apply(lambda row: row["amount"] / row["quantity"] if row["quantity"] != 0 else 0, axis=1)
+
+        st.subheader("Top Inventory Items by Value")
+        top_inventory = inv_df.groupby("description", as_index=False).agg({
+            "quantity": "sum",
+            "amount": "sum"
+        }).sort_values("amount", ascending=False).head(5)
+        st.dataframe(top_inventory, use_container_width=True)
+    else:
+        st.info("No inventory data available.")
