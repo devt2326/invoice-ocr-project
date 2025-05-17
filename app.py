@@ -185,9 +185,6 @@ with tabs[1]:
             amount_val = extracted_data.get("total_amount", 0)
             amount_str = str(amount_val).replace("$", "").replace(",", "").strip()
             
-            amount_val = extracted_data.get("total_amount", 0)
-            amount_str = str(amount_val).replace("$", "").replace(",", "").strip()
-            
             try:
                 amount = float(amount_str)
             except:
