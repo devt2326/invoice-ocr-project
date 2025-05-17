@@ -6,6 +6,7 @@ import pandas as pd
 import streamlit as st
 from dotenv import load_dotenv
 from datetime import datetime
+
 # Load environment variables
 load_dotenv()
 openai.api_key = os.getenv("OPENAI_API_KEY")
@@ -36,10 +37,12 @@ if "journal_entries" not in st.session_state:
     st.session_state["journal_entries"] = []
 
 # Tabs
-tabs = st.tabs(["Upload Invoice", "Invoice Details", "Journal Entries", "Ledger History", "Inventory"])
+tabs = st.tabs(["Upload Invoice", "Journal Entries", "Ledger History", "Inventory", "Dashboard"])
 
-# Upload Invoice
+# Upload Invoice (Upload + Details)
 with tabs[0]:
+    st.header("Invoice Upload and Details")
+
     uploaded_file = st.file_uploader("Upload your Invoice PDF", type=["pdf"])
     if uploaded_file:
         text = ""
@@ -50,18 +53,8 @@ with tabs[0]:
                     if page_text:
                         text += page_text + "\n"
             st.session_state["invoice_text"] = text
-            st.success("Invoice text extracted.")
-        except Exception as e:
-            st.error(f"PDF Read Error: {e}")
 
-# Invoice Details
-with tabs[1]:
-    text = st.session_state.get("invoice_text", "")
-    if text:
-        st.subheader("Extracted Invoice Text")
-        st.text_area("Text", text, height=300)
-
-        if st.button("Extract Invoice Fields"):
+            # Auto extract invoice fields on upload
             with st.spinner("Calling GPT to extract invoice fields..."):
                 prompt = f"""
 Extract the following fields from this invoice text:
@@ -101,15 +94,15 @@ Invoice:
                 except Exception as e:
                     st.error(f"GPT parsing error: {e}")
 
+        except Exception as e:
+            st.error(f"PDF Read Error: {e}")
+
     data = st.session_state.get("extracted_data", {})
 
     if data:
-        
         st.subheader("Invoice Details")
 
-        # --- Line Items UI ---
         st.markdown("### Line Items")
-
         with st.form("add_item_form", clear_on_submit=True):
             col1, col2, col3, col4 = st.columns([4, 2, 2, 1])
             with col1:
@@ -176,9 +169,10 @@ Invoice:
                 st.session_state["extracted_data"] = data
                 st.success("Invoice details processed.")
     else:
-        st.info("Please upload and extract an invoice first.")
+        st.info("Please upload a valid invoice PDF.")
+
 # Journal Entries
-with tabs[2]:
+with tabs[1]:
     st.header("Suggested Journal Entries")
 
     extracted_data = st.session_state.get("extracted_data", {})
@@ -188,6 +182,9 @@ with tabs[2]:
         if not extracted_data:
             st.warning("Please extract invoice data first.")
         else:
+            amount_val = extracted_data.get("total_amount", 0)
+            amount_str = str(amount_val).replace("$", "").replace(",", "").strip()
+            
             amount_val = extracted_data.get("total_amount", 0)
             amount_str = str(amount_val).replace("$", "").replace(",", "").strip()
             
@@ -271,7 +268,7 @@ with tabs[2]:
                 inv_df.to_excel(INVENTORY_FILE, index=False)
 
 # Ledger History
-with tabs[3]:
+with tabs[2]:
     st.subheader("Ledger Entries")
     if os.path.exists(LEDGER_FILE):
         df = pd.read_excel(LEDGER_FILE)
@@ -280,7 +277,7 @@ with tabs[3]:
         st.info("No ledger entries found yet.")
 
 # Inventory View
-with tabs[4]:
+with tabs[3]:
     st.header("Inventory")
     if os.path.exists(INVENTORY_FILE):
         inv_df = pd.read_excel(INVENTORY_FILE)
@@ -298,3 +295,39 @@ with tabs[4]:
         st.dataframe(grouped, use_container_width=True)
     else:
         st.info("No inventory records yet. Upload an invoice with Inventory Purchases to get started.")
+
+# Dashboard Tab
+with tabs[4]:
+    st.header("Dashboard Overview")
+
+    col1, col2 = st.columns(2)
+
+    if os.path.exists(LEDGER_FILE):
+        ledger_df = pd.read_excel(LEDGER_FILE)
+        total_debit = ledger_df["debit"].fillna(0).sum()
+        total_credit = ledger_df["credit"].fillna(0).sum()
+
+        with col1:
+            st.metric("Total Debits", f"${total_debit:,.2f}")
+        with col2:
+            st.metric("Total Credits", f"${total_credit:,.2f}")
+
+        st.subheader("Recent Journal Entries")
+        st.dataframe(ledger_df.tail(10), use_container_width=True)
+    else:
+        st.info("No ledger data available.")
+
+    if os.path.exists(INVENTORY_FILE):
+        inv_df = pd.read_excel(INVENTORY_FILE)
+        inv_df["amount"] = inv_df["amount"].astype(str).str.replace("$", "").str.replace(",", "").astype(float)
+        inv_df["quantity"] = pd.to_numeric(inv_df["quantity"], errors="coerce").fillna(0)
+        inv_df["unit_cost"] = inv_df.apply(lambda row: row["amount"] / row["quantity"] if row["quantity"] != 0 else 0, axis=1)
+
+        st.subheader("Top Inventory Items by Value")
+        top_inventory = inv_df.groupby("description", as_index=False).agg({
+            "quantity": "sum",
+            "amount": "sum"
+        }).sort_values("amount", ascending=False).head(5)
+        st.dataframe(top_inventory, use_container_width=True)
+    else:
+        st.info("No inventory data available.")
